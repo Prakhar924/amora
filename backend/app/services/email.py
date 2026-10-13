@@ -1,11 +1,16 @@
 """Transactional email (verification and password reset).
 
-Locally this talks to the MailHog container in docker-compose, where every
-message is visible at http://localhost:8025. If SMTP is unreachable and
-`email_console_fallback` is on, the message is logged instead so development
-never blocks on mail delivery.
+Three transports, selected by `EMAIL_TRANSPORT`:
 
-`smtplib` is synchronous, so sends are pushed to a worker thread.
+* ``resend``  — Resend's HTTPS API. **Required on Render**, whose free and
+  paid plans block outbound SMTP ports 25, 465 and 587 entirely, so an SMTP
+  transport cannot work there no matter how it is configured.
+* ``smtp``    — any SMTP provider. Used by the VPS deployment and by the local
+  Mailpit container.
+* ``console`` — log the message instead of sending. Development only.
+
+`auto` (the default) picks `resend` when an API key is present, otherwise
+`smtp`, otherwise `console`.
 """
 
 from __future__ import annotations
@@ -15,13 +20,76 @@ import smtplib
 from email.message import EmailMessage
 
 import anyio
+import httpx
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+RESEND_ENDPOINT = "https://api.resend.com/emails"
 
-def _send_sync(to: str, subject: str, text_body: str, html_body: str | None) -> None:
+
+def _resolve_transport() -> str:
+    configured = settings.email_transport.lower()
+    if configured != "auto":
+        return configured
+    if settings.resend_api_key:
+        return "resend"
+    if settings.smtp_host:
+        return "smtp"
+    return "console"
+
+
+# --------------------------------------------------------------------------
+# Transports
+# --------------------------------------------------------------------------
+async def _send_via_resend(
+    to: str, subject: str, text_body: str, html_body: str | None
+) -> None:
+    """Send through Resend's HTTPS API.
+
+    Raises on failure unless the console fallback is enabled: a verification
+    email that silently fails leaves the user staring at an empty inbox with
+    no way forward.
+    """
+    payload: dict[str, object] = {
+        "from": settings.smtp_from,
+        "to": [to],
+        "subject": subject,
+        "text": text_body,
+    }
+    if html_body:
+        payload["html"] = html_body
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(
+            RESEND_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {settings.resend_api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+
+    if response.status_code >= 400:
+        detail = response.text[:500]
+        # The single most common Resend failure, and the error message alone
+        # does not make the cause obvious.
+        if response.status_code == 403 and "resend.dev" in settings.smtp_from:
+            raise RuntimeError(
+                "Resend rejected the send: the shared resend.dev sender can "
+                "only deliver to the address that owns the Resend account. To "
+                "email real users you must verify a domain you control and set "
+                f"SMTP_FROM to an address on it. Response: {detail}"
+            )
+        raise RuntimeError(f"Resend API error {response.status_code}: {detail}")
+
+    logger.info("Sent %r to %s via Resend", subject, to)
+
+
+def _send_via_smtp_sync(
+    to: str, subject: str, text_body: str, html_body: str | None
+) -> None:
     message = EmailMessage()
     message["From"] = settings.smtp_from
     message["To"] = to
@@ -30,31 +98,60 @@ def _send_sync(to: str, subject: str, text_body: str, html_body: str | None) -> 
     if html_body:
         message.add_alternative(html_body, subtype="html")
 
-    try:
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as smtp:
-            if settings.smtp_use_tls:
-                smtp.starttls()
-            if settings.smtp_user and settings.smtp_password:
-                smtp.login(settings.smtp_user, settings.smtp_password)
-            smtp.send_message(message)
-        logger.info("Sent %r to %s", subject, to)
-    except (OSError, smtplib.SMTPException) as exc:
-        if not settings.email_console_fallback:
-            raise
-        logger.warning(
-            "SMTP unavailable (%s). Falling back to console.\n"
-            "--- EMAIL ---\nTo: %s\nSubject: %s\n\n%s\n-------------",
-            exc,
-            to,
-            subject,
-            text_body,
-        )
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
+        if settings.smtp_use_tls:
+            smtp.starttls()
+        if settings.smtp_user and settings.smtp_password:
+            smtp.login(settings.smtp_user, settings.smtp_password)
+        smtp.send_message(message)
+    logger.info("Sent %r to %s via SMTP", subject, to)
 
 
+def _log_to_console(to: str, subject: str, text_body: str) -> None:
+    logger.warning(
+        "EMAIL NOT SENT — logging instead.\n"
+        "--- EMAIL ---\nTo: %s\nSubject: %s\n\n%s\n-------------",
+        to,
+        subject,
+        text_body,
+    )
+
+
+# --------------------------------------------------------------------------
+# Public API
+# --------------------------------------------------------------------------
 async def send_email(
     to: str, subject: str, text_body: str, html_body: str | None = None
 ) -> None:
-    await anyio.to_thread.run_sync(_send_sync, to, subject, text_body, html_body)
+    """Deliver one message, honouring the configured transport.
+
+    Never raises when `email_console_fallback` is on, so a development machine
+    without mail configured still works. In production that flag is forbidden,
+    so a failure propagates and is logged as an error.
+    """
+    transport = _resolve_transport()
+
+    try:
+        if transport == "resend":
+            await _send_via_resend(to, subject, text_body, html_body)
+            return
+        if transport == "smtp":
+            # smtplib is synchronous; keep it off the event loop.
+            await anyio.to_thread.run_sync(
+                _send_via_smtp_sync, to, subject, text_body, html_body
+            )
+            return
+        _log_to_console(to, subject, text_body)
+    except Exception as exc:
+        if not settings.email_console_fallback:
+            logger.error("Email delivery to %s failed: %s", to, exc)
+            raise
+        logger.warning(
+            "Email transport %r failed (%s); falling back to the console.",
+            transport,
+            exc,
+        )
+        _log_to_console(to, subject, text_body)
 
 
 def _wrap(title: str, intro: str, action_url: str, button: str) -> str:

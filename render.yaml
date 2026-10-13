@@ -1,0 +1,124 @@
+# Render Blueprint for the Amora API — free tier.
+#
+# Deploy: Render dashboard -> New -> Blueprint -> point at this repository.
+# Render reads this file and creates the service; you then fill in the
+# secrets marked `sync: false` in the dashboard.
+#
+# ---------------------------------------------------------------------------
+# FREE-TIER REALITIES — read before relying on this
+# ---------------------------------------------------------------------------
+# * The service SPINS DOWN after 15 minutes with no traffic. The next request
+#   wakes it, taking roughly 50-60 seconds. The frontend handles this (it
+#   shows a "waking up" message and uses a long timeout), but first impressions
+#   are poor and a WebSocket cannot be established until the wake completes.
+# * 512 MB RAM, 0.1 CPU, SINGLE INSTANCE, no autoscaling. Hence one uvicorn
+#   worker and WS_FANOUT_ENABLED=false.
+# * 750 instance-hours per month, shared across the whole workspace.
+# * No persistent disk — which is fine, because photos live in R2 and the
+#   database is Supabase.
+# * OUTBOUND SMTP IS BLOCKED on ports 25/465/587, on every plan. Email must
+#   therefore go over an HTTPS API; EMAIL_TRANSPORT is pinned to `resend`.
+# * Render's own documentation says not to use free instances for production.
+#   This blueprint is for a demo or soft launch, not a real product launch.
+
+services:
+  - type: web
+    name: amora-api
+    runtime: docker
+    plan: free
+    region: frankfurt          # Put this near your Supabase region.
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    branch: main
+    # Only rebuild when the backend actually changes; frontend-only commits
+    # should not consume build minutes or restart the API.
+    buildFilter:
+      paths:
+        - backend/**
+        - render.yaml
+
+    # Render polls this path to decide whether a deploy succeeded. It must be
+    # the cheap liveness probe, not /health/ready: a readiness failure caused
+    # by, say, a bad R2 key would otherwise roll back an otherwise-good deploy.
+    healthCheckPath: /health
+
+    envVars:
+      # --- Runtime -------------------------------------------------------
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      # 512 MB and 0.1 CPU does not fit a second worker, and a single
+      # instance makes cross-worker fan-out meaningless anyway.
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: WS_FANOUT_ENABLED
+        value: "false"
+      - key: ENABLE_DOCS
+        value: "false"
+      # Render terminates TLS and forwards the original Host, so this must
+      # name the service's own hostname.
+      - key: ALLOWED_HOSTS
+        fromService:
+          type: web
+          name: amora-api
+          property: host
+
+      # --- Secrets: set these in the Render dashboard ---------------------
+      # `sync: false` means "do not read this from the repository" — Render
+      # prompts for it on first deploy and stores it encrypted.
+      - key: SECRET_KEY
+        generateValue: true     # Render generates a strong value for us.
+
+      # Supabase SHARED POOLER URL (port 6543). The direct db.<ref>.supabase.co
+      # host is IPv6-only and unavailable on the free plan, so it cannot be
+      # reached from Render.
+      #   postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres
+      - key: DATABASE_URL_OVERRIDE
+        sync: false
+
+      # Upstash Redis TCP URL (rediss://...). Used for rate limiting only;
+      # pub/sub is not required because WS_FANOUT_ENABLED is false.
+      - key: REDIS_URL
+        sync: false
+
+      # --- Object storage: Cloudflare R2 ----------------------------------
+      - key: S3_ENDPOINT_URL
+        sync: false             # https://<account-id>.r2.cloudflarestorage.com
+      - key: S3_PUBLIC_ENDPOINT_URL
+        sync: false             # same value as above for R2
+      - key: S3_ACCESS_KEY
+        sync: false
+      - key: S3_SECRET_KEY
+        sync: false
+      - key: S3_BUCKET
+        value: amora-photos
+      - key: S3_REGION
+        value: auto             # R2 requires the literal string "auto"
+
+      # --- Email: Resend over HTTPS (SMTP ports are blocked) --------------
+      - key: EMAIL_TRANSPORT
+        value: resend
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SMTP_FROM
+        sync: false             # must be on a domain verified with Resend
+      - key: EMAIL_CONSOLE_FALLBACK
+        value: "false"
+
+      # --- Frontend ------------------------------------------------------
+      - key: FRONTEND_BASE_URL
+        sync: false             # https://<user>.github.io/amora
+      - key: CORS_ORIGINS
+        sync: false             # https://<user>.github.io   (origin only!)
+
+      # --- Product -------------------------------------------------------
+      # Leave true if you have a verified sending domain. Set to false ONLY
+      # if you cannot send email to arbitrary addresses, and understand that
+      # accounts are then unverified and password reset will not work.
+      - key: REQUIRE_EMAIL_VERIFICATION
+        value: "true"
+      - key: REQUIRE_PHOTO_MODERATION
+        value: "true"
+      - key: BCRYPT_ROUNDS
+        value: "12"

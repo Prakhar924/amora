@@ -135,13 +135,22 @@ async def register(
         }
 
     now = datetime.now(UTC)
+    # When email verification is disabled the account is usable immediately.
+    # That is a deliberate downgrade for deployments that cannot send mail to
+    # arbitrary addresses (no custom domain); see `require_email_verification`.
+    verification_required = settings.require_email_verification
     user = User(
         email=payload.email,
         hashed_password=hash_password(payload.password),
         date_of_birth=datetime.combine(
             payload.date_of_birth, datetime.min.time(), tzinfo=UTC
         ),
-        status=UserStatus.PENDING_VERIFICATION,
+        status=(
+            UserStatus.PENDING_VERIFICATION
+            if verification_required
+            else UserStatus.ACTIVE
+        ),
+        email_verified_at=None if verification_required else now,
         terms_accepted_at=now,
         privacy_accepted_at=now,
     )
@@ -175,12 +184,20 @@ async def register(
     )
     await db.commit()
 
+    if not verification_required:
+        return {
+            "message": "Account created. You can sign in now.",
+            "user_id": str(user.id),
+            "verification_required": False,
+        }
+
     token = create_email_token(user.id, "verify_email", hours=24)
     background.add_task(email_service.send_verification_email, user.email, token)
 
     return {
         "message": "Account created. Check your inbox to confirm your email address.",
         "user_id": str(user.id),
+        "verification_required": True,
     }
 
 
@@ -247,7 +264,10 @@ async def login(payload: LoginRequest, request: Request, db: Db) -> TokenPair:
     if user.deleted_at is not None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password")
 
-    if user.status == UserStatus.PENDING_VERIFICATION:
+    if (
+        settings.require_email_verification
+        and user.status == UserStatus.PENDING_VERIFICATION
+    ):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "Confirm your email address before signing in.",

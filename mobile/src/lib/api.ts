@@ -68,6 +68,51 @@ interface RequestOptions {
 let refreshInFlight: Promise<boolean> | null = null;
 let onUnauthorized: (() => void) | null = null;
 
+// --- Cold-start awareness --------------------------------------------------
+// A free-tier host (Render, Fly's scale-to-zero) suspends the service after a
+// period of inactivity and takes ~50-60s to wake. Without feedback the app
+// looks frozen, and users retry, making it worse. Any request still running
+// after this threshold flips a flag that screens can surface.
+const SLOW_REQUEST_MS = 2500;
+
+type SlowListener = (isSlow: boolean) => void;
+const slowListeners = new Set<SlowListener>();
+let inFlightSlowCount = 0;
+
+/** Subscribe to "a request is taking unusually long". Returns an unsubscribe. */
+export function subscribeToSlowRequests(listener: SlowListener): () => void {
+  slowListeners.add(listener);
+  // Report the current state immediately so a late subscriber is not stale.
+  listener(inFlightSlowCount > 0);
+  return () => slowListeners.delete(listener);
+}
+
+function notifySlow(isSlow: boolean): void {
+  for (const listener of slowListeners) {
+    try {
+      listener(isSlow);
+    } catch {
+      // A broken listener must not break the request it is observing.
+    }
+  }
+}
+
+/**
+ * Wake a sleeping backend without blocking the UI.
+ *
+ * Called at startup: it costs one cheap request, and it means the host is
+ * already awake by the time the user has finished typing their password.
+ */
+export async function wakeBackend(): Promise<boolean> {
+  try {
+    const healthUrl = API_BASE_URL.replace(/\/api\/v\d+\/?$/, '') + '/health';
+    const response = await fetch(healthUrl, { method: 'GET' });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Registered by the auth store so a dead session can clear app state. */
 export function setUnauthorizedHandler(handler: () => void): void {
   onUnauthorized = handler;
@@ -151,13 +196,32 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     });
   };
 
+  // Flag the request as slow if it outlives the threshold, so the UI can
+  // explain the delay rather than appearing frozen.
+  let slowTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    slowTimer = null;
+    inFlightSlowCount += 1;
+    if (inFlightSlowCount === 1) notifySlow(true);
+  }, SLOW_REQUEST_MS);
+
+  const clearSlow = () => {
+    if (slowTimer !== null) {
+      clearTimeout(slowTimer);
+      slowTimer = null;
+    } else {
+      inFlightSlowCount = Math.max(0, inFlightSlowCount - 1);
+      if (inFlightSlowCount === 0) notifySlow(false);
+    }
+  };
+
   let response: Response;
   try {
     response = await send();
-  } catch (error) {
+  } catch {
+    clearSlow();
     throw new ApiError(
       0,
-      'Cannot reach the server. Check your connection and try again.',
+      'Cannot reach the server. It may be starting up — wait a moment and try again.',
     );
   }
 
@@ -175,6 +239,8 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       throw new ApiError(401, 'Your session has expired. Please sign in again.');
     }
   }
+
+  clearSlow();
 
   if (!response.ok) throw await parseError(response);
 

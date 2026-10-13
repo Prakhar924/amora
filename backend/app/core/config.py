@@ -17,6 +17,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEV_SECRET = "dev-only-insecure-secret-change-me"
 
 
+def _as_driver(url: str, driver: str) -> str:
+    """Rewrite a connection URL to use a specific SQLAlchemy driver.
+
+    Providers hand out `postgresql://` or `postgres://` URLs; SQLAlchemy needs
+    an explicit driver (`postgresql+asyncpg://`) and does not accept the
+    `postgres://` alias at all.
+    """
+    for prefix in ("postgresql+asyncpg://", "postgresql+psycopg://", "postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return driver + "://" + url[len(prefix) :]
+    return url
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
@@ -45,6 +58,16 @@ class Settings(BaseSettings):
     web_concurrency: int = 2
 
     # --- Database --------------------------------------------------------
+    # A full connection string takes precedence over the discrete fields
+    # below. Managed providers (Supabase, Neon, Railway) hand you one URL, and
+    # splitting it into parts by hand is a reliable source of typos.
+    #
+    # Supabase note: use the SHARED POOLER host
+    #   postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres
+    # The direct `db.<ref>.supabase.co` host is IPv6-only and is not available
+    # on the free plan, so it cannot be reached from most hosts.
+    database_url_override: str | None = None
+
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_user: str = "amora"
@@ -75,6 +98,14 @@ class Settings(BaseSettings):
     s3_presign_ttl_seconds: int = 900
 
     # --- Email -----------------------------------------------------------
+    # Which transport to use: "auto", "resend", "smtp", or "console".
+    #
+    # Render blocks outbound SMTP ports (25, 465, 587) on every plan, so an
+    # SMTP transport cannot work there regardless of provider. Deployments on
+    # Render must use "resend" (an HTTPS API).
+    email_transport: str = "auto"
+    resend_api_key: str | None = None
+
     smtp_host: str = "localhost"
     smtp_port: int = 1025
     smtp_user: str | None = None
@@ -87,6 +118,20 @@ class Settings(BaseSettings):
     email_console_fallback: bool = True
 
     # --- Product rules ---------------------------------------------------
+    # Require a confirmed email address before an account can be used.
+    #
+    # Turning this OFF is a real security downgrade — see the warning logged at
+    # startup — but it is the only way to run on a $0 stack with no custom
+    # domain, because Resend's shared sender can only deliver to the account
+    # owner's own address. Documented in DEPLOYMENT-FREE.md.
+    require_email_verification: bool = True
+
+    # Publish chat events to Redis so they reach clients connected to another
+    # worker. Pointless (and a wasted round trip) on a single-instance
+    # deployment such as Render's free tier, and not every managed Redis
+    # supports pub/sub over the TCP protocol.
+    ws_fanout_enabled: bool = True
+
     minimum_age: int = 18
     maximum_age: int = 120
     max_photos_per_user: int = 6
@@ -108,15 +153,42 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
+        """Async (asyncpg) connection URL."""
+        if self.database_url_override:
+            return _as_driver(self.database_url_override, "postgresql+asyncpg")
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
+    @property
+    def uses_transaction_pooler(self) -> bool:
+        """True when the database is reached through a transaction-mode pooler.
+
+        PgBouncer-style transaction pooling hands each transaction whatever
+        backend connection is free, so a statement prepared on one connection
+        may not exist on the next. asyncpg caches prepared statements by
+        default, which surfaces as intermittent `InvalidSQLStatementNameError`
+        under concurrency. Detecting this lets `app.db.session` disable the
+        cache instead of leaving a landmine for whoever deploys it.
+
+        Supabase's transaction pooler is port 6543 on a `pooler.supabase.com`
+        host; `POOLED_DATABASE` forces the same behaviour elsewhere.
+        """
+        if self.force_pooled_database:
+            return True
+        url = self.database_url_override or ""
+        return ":6543" in url or "pooler.supabase.com" in url
+
+    # Set when a pooler is in use but not auto-detected from the URL.
+    force_pooled_database: bool = False
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def sync_database_url(self) -> str:
         """Used by Alembic, which we run with a sync driver."""
+        if self.database_url_override:
+            return _as_driver(self.database_url_override, "postgresql+psycopg")
         return (
             f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"

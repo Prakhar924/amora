@@ -16,7 +16,7 @@ import React, {
   useState,
 } from 'react';
 
-import { ApiError, auth, setUnauthorizedHandler, storage } from './api';
+import { ApiError, auth, setUnauthorizedHandler, storage, wakeBackend } from './api';
 import type { Me } from './types';
 
 interface AuthState {
@@ -60,6 +60,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       if (await storage.hasSession()) {
         await refresh();
+      } else {
+        // No session to restore, so nothing above touched the network. Nudge
+        // the backend awake now: on a free tier that suspends after idling,
+        // this overlaps the ~1 minute cold start with the user reading the
+        // welcome screen instead of with them waiting on a button press.
+        void wakeBackend();
       }
       if (!cancelled) setInitializing(false);
     })();

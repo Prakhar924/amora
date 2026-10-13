@@ -17,9 +17,10 @@ Last updated: 13 October 2026
 | 4 — Communication | ✅ Done |
 | 5 — Safety and quality | ✅ Done |
 | 6 — Finalisation | ◐ Mostly done — production deploy not performed |
-| 7 — Production readiness | ◐ Code complete — awaiting your accounts and billing |
+| 7 — Production readiness (VPS) | ◐ Code complete — awaiting your accounts |
+| 8 — Free-tier deployment | ◐ Code complete — awaiting your free accounts |
 
-**155 backend tests pass. Frontend typechecks and builds. The full stack runs
+**179 backend tests pass. Frontend typechecks and builds. The full stack runs
 locally and the complete user journey has been exercised in a browser against
 the real API. Production tooling is written and validated locally; nothing has
 been deployed and no paid resources exist.**
@@ -242,11 +243,83 @@ Not done — needs your accounts and billing approval:
    to strip any `/api/vN` and verified across five URL shapes.
 9. **Shell scripts were stored with CRLF line endings.** Git on Windows would
    have shipped them to a Linux server where they fail with
-   `bash: : command not found` — breaking the very first deploy. Fixed with
+   `bash: 
+: command not found` — breaking the very first deploy. Fixed with
    `.gitattributes` and the executable bit set in the index.
 10. **`/health/ready` crashed on first use** (missing imports after an earlier
     lint autofix removed them as unused). Caught by calling it against the
     running stack rather than assuming it worked.
+
+---
+
+## Phase 8 — Free-tier ($0) deployment ◐
+
+A second, zero-cost deployment path: GitHub Pages + Render + Supabase +
+Upstash + Cloudflare R2 + Resend. Nothing provisioned, nothing paid for.
+
+Done:
+
+- **`render.yaml` blueprint** — Docker runtime, free plan, `/health` as the
+  deploy probe (not `/health/ready`, so a bad R2 key cannot roll back an
+  otherwise-good deploy), build filters so frontend commits do not rebuild the
+  API, and every secret marked `sync: false`.
+- **Managed-database support** — `DATABASE_URL_OVERRIDE` accepts a provider's
+  connection string, rewrites the driver for both asyncpg and Alembic, and
+  accepts the legacy `postgres://` scheme SQLAlchemy rejects.
+- **Transaction-pooler safety** — Supabase's pooler is auto-detected, which
+  switches on `statement_cache_size=0`, unnamed prepared statements and
+  `NullPool`. Without this asyncpg raises `InvalidSQLStatementNameError`
+  intermittently under concurrency — a failure that passes every local test
+  and appears only in production.
+- **Resend HTTPS transport** — required because **Render blocks outbound SMTP
+  on ports 25/465/587 on every plan**, so no SMTP configuration can work
+  there. Resend's opaque 403 is translated into an explanation of the actual
+  cause (the shared sender only delivers to the account owner).
+- **`REQUIRE_EMAIL_VERIFICATION`** — lets a deployment with no verified
+  sending domain accept real signups, with a boot-time warning and the costs
+  documented rather than hidden.
+- **`WS_FANOUT_ENABLED`** — off for single-instance hosting, since Redis
+  pub/sub exists only to reach *other* workers and is not supported over TCP
+  by every managed Redis. Rate limiting still uses Upstash.
+- **Platform-agnostic container** — `$PORT` and `$WEB_CONCURRENCY` honoured at
+  runtime, proxy headers trusted, and the entrypoint now waits on whatever
+  database is configured rather than a hardcoded host, redacting credentials
+  from its log line.
+- **Cold-start UX** — the client flags any request slower than 2.5s and shows
+  "waking the server up", and pings `/health` at launch so the ~1 minute wake
+  overlaps with the welcome screen rather than a button press.
+- **[DEPLOYMENT-FREE.md](DEPLOYMENT-FREE.md)** — account checklist, backup and
+  restore commands, and an explicit list of what the free tier costs you.
+
+Not done — needs your accounts:
+
+- No Render, Supabase, Upstash, R2 or Resend account exists.
+- Free-tier behaviour (sleeping, pausing, quota exhaustion) has not been
+  observed in situ; it is documented from provider sources and the cold-start
+  path was verified locally by pausing the API container.
+
+### Research that changed the design
+
+Two findings came from provider documentation and altered the implementation
+rather than just the docs:
+
+- **Render blocks outbound SMTP.** An SMTP transport cannot work there at all,
+  which is why the Resend HTTPS transport was added rather than configured.
+- **Resend's shared sender only reaches the account owner.** This is the real
+  blocker to a strict-$0 public launch, so `REQUIRE_EMAIL_VERIFICATION` was
+  added as an explicit, warned-about trade-off instead of pretending signup
+  works.
+
+### Bugs found and fixed in this phase
+
+11. **Cold-start banner was unreadable on the sign-in screen.** It was styled
+    for the dark welcome screen (`bg-black/30`, light text) and rendered as
+    light-grey-on-grey elsewhere. Caught by pausing the API container and
+    looking at the result rather than assuming it rendered.
+12. **An email test passed against a stub.** `conftest`'s autouse fixture
+    replaces `send_email`, so the new transport tests were exercising the stub
+    rather than the real delivery logic. Fixed by capturing the genuine
+    function at import time.
 
 ---
 
@@ -259,7 +332,7 @@ Not done — needs your accounts and billing approval:
 | Seed | `python -m app.seed` | 44 profiles, 2 matches, 4 messages, photos in S3 |
 | API surface | `app.openapi()` | 44 endpoints registered |
 | Smoke test | Live API, 10 scenarios | All passed, incl. privacy and authorization |
-| Backend tests | `pytest` | **155 passed** in 68s |
+| Backend tests | `pytest` | **179 passed** in 74s |
 | Lint | `ruff check .` | All checks passed |
 | Frontend types | `tsc --noEmit` | Clean |
 | Frontend build | `expo export --platform web` | 2.4MB JS + 20KB CSS |
@@ -270,6 +343,12 @@ Not done — needs your accounts and billing approval:
 | Security headers | `curl -D -` | CSP, nosniff, DENY, Referrer-Policy present |
 | WSS derivation | 5 URL shapes | `https` → `wss`, prefix stripped correctly |
 | Line endings | `git show :file` | LF for every script executed on Linux |
+| Managed DB URLs | 4 provider URL shapes | Driver rewritten; pooler detected; `postgres://` accepted |
+| Pooler engine config | unit test | `NullPool` + `statement_cache_size=0` + unnamed statements |
+| Resend transport | mocked HTTPS | Correct payload, auth header, and a clear message for the 403 |
+| Verification-off signup | API test | Account active immediately, can sign in and call the API |
+| Cold-start UX | paused the API container mid-request | Banner appeared, then cleared and the sign-in completed |
+| Container `$PORT` | rebuilt and ran dev stack | Entrypoint waits on the configured DB, redacts credentials |
 | Mobile viewport | 375×812 emulation | Renders correctly |
 
 ---

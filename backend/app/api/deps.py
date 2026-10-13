@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.core.security import TokenError, decode_token
 from app.db.session import get_db
 from app.models import Profile, User, UserStatus
@@ -91,6 +92,10 @@ async def get_current_user(
 async def get_verified_user(
     user: Annotated[User, Depends(get_current_user)],
 ) -> User:
+    # Deployments that cannot send mail to arbitrary addresses switch this
+    # off; every other gate in the ladder still applies.
+    if not settings.require_email_verification:
+        return user
     if user.email_verified_at is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

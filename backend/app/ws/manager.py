@@ -38,7 +38,22 @@ class ConnectionManager:
 
     # --- lifecycle --------------------------------------------------------
     async def start(self) -> None:
-        """Subscribe to the cross-worker fan-out channel."""
+        """Subscribe to the cross-worker fan-out channel.
+
+        Skipped entirely when `ws_fanout_enabled` is false, which is correct
+        for a single-instance deployment: there is no other worker to reach,
+        so publishing to Redis would be a wasted round trip on every message.
+        It also avoids depending on pub/sub, which not every managed Redis
+        supports over the TCP protocol.
+        """
+        if not settings.ws_fanout_enabled:
+            logger.info(
+                "WebSocket fan-out disabled; delivering within this process "
+                "only. Correct for a single-instance deployment."
+            )
+            self._redis = None
+            return
+
         try:
             self._redis = aioredis.from_url(
                 settings.redis_url, encoding="utf-8", decode_responses=True

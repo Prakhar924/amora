@@ -52,6 +52,25 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Starting %s API (%s)", settings.app_name, settings.app_env)
 
+    # Loud, repeated-at-every-boot warnings for settings that weaken the
+    # product. Easy to switch on during setup and easy to forget afterwards.
+    if not settings.require_email_verification:
+        logger.warning(
+            "EMAIL VERIFICATION IS DISABLED. Anyone can register with an "
+            "address they do not own, and password reset is unusable. This is "
+            "acceptable only for a demo deployment that cannot send mail."
+        )
+    if not settings.require_photo_moderation:
+        logger.warning(
+            "PHOTO MODERATION IS DISABLED. Uploaded photos become publicly "
+            "visible with no review."
+        )
+    if settings.is_production and not settings.ws_fanout_enabled:
+        logger.info(
+            "WebSocket fan-out disabled: chat delivery is correct only while "
+            "this service runs as a single instance."
+        )
+
     # Fail loudly at boot rather than on the first request.
     try:
         async with engine.begin() as conn:

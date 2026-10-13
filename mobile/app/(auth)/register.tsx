@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiError, auth } from '@/lib/api';
 import { APP_NAME, MINIMUM_AGE } from '@/lib/config';
 import { Banner, Button, Chip, Field, Subtitle, Title } from '@/components/ui';
+import { WakingNotice } from '@/components/waking-notice';
 import type { Gender } from '@/lib/types';
 
 const GENDERS: { value: Gender; label: string }[] = [
@@ -151,6 +152,7 @@ export default function Register() {
       <Subtitle>A few details and you are in. You can edit all of it later.</Subtitle>
 
       {error ? <Banner message={error} /> : null}
+      <WakingNotice />
 
       <Field
         label="First name"

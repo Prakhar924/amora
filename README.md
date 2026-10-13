@@ -333,7 +333,8 @@ stubbed; rate limiting is disabled by default and re-enabled per test.
 | `test_safety.py` | 38 | Blocking, reporting, photo moderation, suspension, deletion, profile privacy |
 | `test_e2e_happy_path.py` | 1 | The entire product in one journey |
 | `test_production_config.py` | 30 | Production guard: secrets, TLS origins, host allow-list, email delivery, seed refusal |
-| **Total** | **155** | |
+| `test_free_tier_deployment.py` | 24 | Managed-database URLs, transaction-pooler safety, Resend HTTPS transport, verification-disabled signup, single-instance chat |
+| **Total** | **179** | |
 
 ---
 
@@ -408,9 +409,20 @@ dangerous:
 ## Production deployment
 
 **Not yet deployed.** Everything needed is in the repository; what remains
-needs your accounts and about **€4.50/month**.
+needs your accounts.
 
-See **[DEPLOYMENT.md](DEPLOYMENT.md)** for the full walkthrough. In short:
+Two supported paths:
+
+| Path | Cost | Guide | Trade-off |
+| --- | --- | --- | --- |
+| **Free tier** — Render + Supabase + Upstash + R2 + Resend | **$0/mo** | **[DEPLOYMENT-FREE.md](DEPLOYMENT-FREE.md)** | API sleeps after 15 min (~1 min cold start); email needs a domain to reach anyone but you; database pauses after 7 days |
+| **Small VPS** — one box + R2 + Resend | ~€4.50/mo | [DEPLOYMENT.md](DEPLOYMENT.md) | You operate Postgres and Redis |
+
+The free path is a genuine public demo, not a production launch — the
+limitations are spelled out rather than glossed over. The VPS path removes the
+sleeping, the pausing and the manual backups.
+
+For the VPS path, in short:
 
 ```bash
 # 1. Prepare a VPS (installs Docker, firewall, swap, auto-updates)

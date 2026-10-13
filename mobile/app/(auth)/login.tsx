@@ -15,6 +15,7 @@ import { ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { APP_NAME } from '@/lib/config';
 import { Banner, Button, Field, Subtitle, Title } from '@/components/ui';
+import { WakingNotice } from '@/components/waking-notice';
 
 export default function Login() {
   const router = useRouter();
@@ -57,6 +58,7 @@ export default function Login() {
       <Subtitle>Sign in to pick up where you left off.</Subtitle>
 
       {error ? <Banner message={error} /> : null}
+      <WakingNotice />
 
       <Field
         label="Email"

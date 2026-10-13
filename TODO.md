@@ -6,24 +6,33 @@ Remaining work, ordered by what a real launch actually depends on.
 
 ## Blocking a public launch
 
-Deployment tooling now exists for all of these — see
-[DEPLOYMENT.md](DEPLOYMENT.md). What remains needs your accounts and billing
-approval; nothing has been provisioned or paid for.
+Deployment tooling exists for both a $0 free-tier stack
+([DEPLOYMENT-FREE.md](DEPLOYMENT-FREE.md)) and a ~€4.50/mo VPS
+([DEPLOYMENT.md](DEPLOYMENT.md)). What remains needs your accounts; nothing
+has been provisioned or paid for.
 
-- [ ] **Provision a server and domain** (~€4.50/mo). `deploy/provision.sh`
-      prepares it; `deploy/deploy.sh` ships to it.
-- [ ] **Create the Cloudflare R2 bucket and API token** (free tier). Keep the
-      bucket private.
-- [ ] **Create the Resend account and verify a sending domain** (free tier).
-      Unverified domains land in spam.
+- [ ] **Create the five free accounts** — Supabase, Upstash, Cloudflare R2,
+      Resend, Render — and paste their credentials into Render. Checklist in
+      DEPLOYMENT-FREE.md. *(Or provision a VPS for the paid path.)*
+- [ ] **Decide the email trade-off.** Without a verified sending domain,
+      Resend can only deliver to your own address. Either buy a cheap domain
+      (~$1–3/yr) or set `REQUIRE_EMAIL_VERIFICATION=false` and accept
+      unverified, unrecoverable accounts.
+- [ ] **Keep the R2 bucket private.** A public bucket makes every user's
+      photos permanently world-readable.
 - [ ] **Set the `EXPO_PUBLIC_API_URL` repository variable** and re-run the
       Pages workflow, so the published frontend talks to your backend.
 - [ ] **Promote your first admin account** after registering — production has
       no seeded users, and photos stay invisible until a moderator approves
       them.
-- [ ] **Test a backup restore.** The nightly dump currently lives on the same
-      host as the database, which protects against a dropped table but not a
-      dead server.
+- [ ] **Test a backup restore.** On the free tier Supabase provides no
+      automatic backups at all, so until you run the documented `pg_dump` you
+      have none. On the VPS the nightly dump sits on the same host as the
+      database, which protects against a dropped table but not a dead server.
+- [ ] **Watch the free-tier quotas** if you take that path: Upstash is 10k
+      commands/day (the rate limiter fails open past that), Supabase pauses
+      after 7 days idle, and Render's 750 instance-hours are consumed quickly
+      by any keep-alive pinger.
 - [ ] **Replace the placeholder legal documents.** `mobile/app/(auth)/terms.tsx`
       and `privacy.tsx` describe what the software genuinely does, but have not
       been reviewed by a lawyer. A dating product handling sensitive personal
@@ -87,6 +96,20 @@ approval; nothing has been provisioned or paid for.
       unused by any screen.
 - [ ] **Account deactivation** as a reversible alternative to deletion. The
       `UserStatus.DEACTIVATED` state exists but nothing sets it.
+
+## If you scale past one instance
+
+The free deployment runs a single instance, and two things are only correct
+because of that. Both are enforced by configuration today, so this is a
+checklist for the day you add a second one.
+
+- [ ] **Set `WS_FANOUT_ENABLED=true`** and move to a Redis that supports
+      pub/sub over the TCP protocol. With it false, a chat message reaches
+      only clients connected to the sender's own instance — a silent,
+      half-working failure rather than an obvious one.
+- [ ] **Re-check the database pool.** The app switches to `NullPool` behind a
+      transaction pooler, which is right for one instance on a small plan but
+      worth revisiting under load.
 
 ## Engineering
 

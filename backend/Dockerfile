@@ -43,12 +43,22 @@ RUN chmod +x ./entrypoint.sh
 
 USER amora
 
+# Managed hosts (Render, Fly, Cloud Run) inject $PORT and route to it. Locally
+# this is the port docker-compose publishes.
+ENV PORT=8000
 EXPOSE 8000
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
-    CMD curl -fsS http://localhost:8000/health || exit 1
+    CMD curl -fsS "http://localhost:${PORT}/health" || exit 1
 
-# `entrypoint.sh` applies migrations before serving, so a fresh volume comes
+# `entrypoint.sh` applies migrations before serving, so a fresh database comes
 # up with a correct schema and no manual step.
 ENTRYPOINT ["./entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form so $PORT and $WEB_CONCURRENCY expand at runtime — both are set by
+# the platform and cannot be baked in at build time.
+#
+# --proxy-headers / --forwarded-allow-ips: the platform terminates TLS and
+# forwards X-Forwarded-*, so the app must trust those headers to see the real
+# scheme and client address. Trust is safe here because nothing can reach the
+# container except the platform's own proxy.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY:-1} --proxy-headers --forwarded-allow-ips '*'"]
