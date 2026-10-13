@@ -24,7 +24,7 @@ PostgreSQL on the server, React Native (Expo) for iOS, Android and the web.
 - [API reference](#api-reference)
 - [Security and privacy design](#security-and-privacy-design)
 - [Honest limitations](#honest-limitations)
-- [Production deployment](#production-deployment)
+- [Production deployment](#production-deployment) · full guide in [DEPLOYMENT.md](DEPLOYMENT.md)
 
 ---
 
@@ -44,7 +44,7 @@ with synthetic profiles so discovery and chat are usable immediately.
 | Service | URL | Notes |
 | --- | --- | --- |
 | API docs (OpenAPI) | <http://localhost:8000/docs> | Interactive |
-| API health | <http://localhost:8000/health> | Checks the database too |
+| API health | <http://localhost:8000/health> | Liveness; `/health/ready` checks DB, Redis and storage |
 | Mailpit inbox | <http://localhost:8025> | Every verification/reset email lands here |
 | Object storage | <http://localhost:4566> | LocalStack S3 |
 | PostgreSQL | `localhost:5434` | `amora` / `amora` |
@@ -332,7 +332,8 @@ stubbed; rate limiting is disabled by default and re-enabled per test.
 | `test_chat.py` | 17 | Chat authorization, validation, idempotency, unread counts, pagination |
 | `test_safety.py` | 38 | Blocking, reporting, photo moderation, suspension, deletion, profile privacy |
 | `test_e2e_happy_path.py` | 1 | The entire product in one journey |
-| **Total** | **125** | |
+| `test_production_config.py` | 30 | Production guard: secrets, TLS origins, host allow-list, email delivery, seed refusal |
+| **Total** | **155** | |
 
 ---
 
@@ -406,35 +407,55 @@ dangerous:
 
 ## Production deployment
 
-Not yet deployed anywhere. What a real deployment needs:
+**Not yet deployed.** Everything needed is in the repository; what remains
+needs your accounts and about **€4.50/month**.
 
-**Must do before taking real users**
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for the full walkthrough. In short:
 
-1. Generate a strong `SECRET_KEY` (`python -c "import secrets; print(secrets.token_urlsafe(48))"`),
-   and set a real `POSTGRES_PASSWORD` and `S3_SECRET_KEY`. The app refuses to
-   start in production otherwise.
-2. Set `APP_ENV=production` and `DEBUG=false`.
-3. Terminate TLS at a reverse proxy (nginx, Caddy, or a managed load balancer)
-   and set `CORS_ORIGINS` to your real origins only.
-4. Point `S3_*` at real object storage (S3, R2, or a MinIO cluster) with the
-   bucket **private**. Only environment variables change.
-5. Configure real SMTP and set `EMAIL_CONSOLE_FALLBACK=false`, so a mail outage
-   surfaces instead of silently logging verification links.
-6. Run managed PostgreSQL and Redis with backups and point-in-time recovery.
-7. Replace the placeholder legal documents.
+```bash
+# 1. Prepare a VPS (installs Docker, firewall, swap, auto-updates)
+curl -fsSL https://raw.githubusercontent.com/Prakhar924/amora/main/deploy/provision.sh | bash
 
-**Should do**
+# 2. Generate secrets, fill in your values, validate
+python deploy/generate-secrets.py -o .env.production
+python deploy/check-config.py .env.production
 
-- Run migrations as a release step (`alembic upgrade head`), not from the app
-  container, once you have more than one replica.
-- Drop the source bind-mount and `--reload` from the compose file; run
-  `uvicorn` with several workers behind the proxy. Redis fan-out already makes
-  multi-worker WebSocket delivery correct.
-- Add an object-storage lifecycle rule to sweep unconfirmed photo uploads.
-- Add structured logging and error tracking; the app logs to stdout.
-- Put the rate limiter behind a trusted-proxy configuration so
-  `X-Forwarded-For` is only honoured from your load balancer.
-- Set up a background job to purge expired `sessions` rows.
+# 3. Deploy
+scp .env.production root@YOUR_SERVER:/opt/amora/
+./deploy/deploy.sh root@YOUR_SERVER
+```
+
+Then set the repository variable `EXPO_PUBLIC_API_URL` to
+`https://your-api-domain/api/v1` and re-run the Pages workflow; the frontend
+picks up the backend automatically.
+
+### The production stack
+
+| Component | Service | Cost |
+| --- | --- | --- |
+| API, PostgreSQL, Redis | One small VPS behind Caddy (automatic HTTPS/WSS) | ~€4.50/mo |
+| Photo storage | Cloudflare R2 — 10GB, **zero egress** | free |
+| Email | Resend — 3,000/mo | free |
+| Frontend | GitHub Pages | free |
+
+Self-hosting Postgres and Redis is the deliberate trade: managed equivalents
+cost ~$17/month on their own, roughly 4x the entire server. Storage and email
+go the other way — their free tiers are genuinely free and self-hosting either
+would be worse.
+
+`docker-compose.prod.yml` differs from the development stack in ways that
+matter: no Mailpit or LocalStack, no source bind-mount or `--reload`, Postgres
+and Redis publish **no host ports**, Redis requires a password, OpenAPI docs
+are off, nightly database backups run, and every container has memory limits
+and log rotation.
+
+### Enforced, not advisory
+
+The API refuses to boot in production with a default signing key, a
+plain-HTTP or localhost CORS origin, a wildcard host allow-list, a console
+email fallback, or weak password hashing — among other checks. `deploy/check-config.py`
+runs the same guard against your env file *before* you deploy, and
+`tests/test_production_config.py` (30 tests) keeps it honest.
 
 **Scaling notes**
 

@@ -53,11 +53,52 @@ function resolveBaseUrl(): string {
 
 export const API_BASE_URL = resolveBaseUrl();
 
-/** The WebSocket endpoint, derived from the API URL. */
-export const WS_URL = API_BASE_URL.replace(/^http/, 'ws').replace(
-  /\/api\/v1$/,
-  '/ws/chat',
-);
+/**
+ * Derive the WebSocket endpoint from the API URL.
+ *
+ * Two things this must get right:
+ *
+ * * **Scheme.** `https` becomes `wss`, so the socket inherits TLS. A browser
+ *   refuses a plain `ws://` connection from an `https://` page (mixed
+ *   content), so getting this wrong silently breaks chat in production only.
+ * * **Path.** The socket is mounted at the server root (`/ws/chat`), not
+ *   under the versioned API prefix, so any `/api/vN` suffix is stripped
+ *   rather than assumed. Writing this as a plain `.replace(/\/api\/v1$/)`
+ *   silently produced a wrong URL whenever the configured value had no
+ *   version suffix.
+ */
+function resolveWebSocketUrl(apiBaseUrl: string): string {
+  const scheme = apiBaseUrl.startsWith('https://') ? 'wss://' : 'ws://';
+  const withoutScheme = apiBaseUrl.replace(/^https?:\/\//, '');
+  // Drop a trailing API prefix of any version, e.g. "/api/v1" or "/api/v2".
+  const root = withoutScheme.replace(/\/api\/v\d+\/?$/, '').replace(/\/$/, '');
+  return `${scheme}${root}/ws/chat`;
+}
+
+export const WS_URL = resolveWebSocketUrl(API_BASE_URL);
+
+/**
+ * True when the page is served over HTTPS but the API is plain HTTP.
+ *
+ * Browsers block these requests as mixed content, and the resulting failure
+ * looks like a server outage rather than a configuration mistake, so it is
+ * surfaced explicitly at startup.
+ */
+export const HAS_MIXED_CONTENT_PROBLEM: boolean =
+  Platform.OS === 'web' &&
+  typeof window !== 'undefined' &&
+  window.location.protocol === 'https:' &&
+  API_BASE_URL.startsWith('http://') &&
+  !API_BASE_URL.includes('localhost') &&
+  !API_BASE_URL.includes('127.0.0.1');
+
+if (HAS_MIXED_CONTENT_PROBLEM) {
+  console.error(
+    `[amora] The app is served over HTTPS but EXPO_PUBLIC_API_URL is ` +
+      `${API_BASE_URL}. The browser will block every request as mixed ` +
+      `content. Rebuild with an https:// API URL.`,
+  );
+}
 
 export const APP_NAME = 'Amora';
 export const MINIMUM_AGE = 18;

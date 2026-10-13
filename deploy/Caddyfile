@@ -1,0 +1,62 @@
+# Caddy configuration for the Amora API.
+#
+# Caddy obtains and renews Let's Encrypt certificates automatically for
+# {$API_DOMAIN}, which is what makes `wss://` work for the chat socket: the
+# WebSocket upgrade inherits the TLS connection, so no separate certificate or
+# proxy rule is required.
+#
+# The only prerequisite is that {$API_DOMAIN} resolves to this host and that
+# ports 80 and 443 are reachable from the internet.
+
+{
+	email {$ACME_EMAIL}
+	# Deployments stay observable without shipping request bodies to the log.
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	# --- Security headers ---------------------------------------------------
+	# The API also sets these itself, so it stays protected if it is ever
+	# fronted by something other than Caddy. Duplicated deliberately.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# Caddy advertises itself by default; there is no reason to tell
+		# scanners exactly what is running.
+		-Server
+	}
+
+	# --- WebSocket ----------------------------------------------------------
+	# Handled by the same reverse_proxy directive below; Caddy passes the
+	# Upgrade and Connection headers through automatically. The long timeouts
+	# matter here: a chat socket is idle most of the time, and the default
+	# would drop it.
+	@websocket {
+		path /ws/*
+	}
+	reverse_proxy @websocket api:8000 {
+		transport http {
+			# Chat sockets are long-lived; the heartbeat is every 25s.
+			read_timeout 1h
+			write_timeout 1h
+		}
+	}
+
+	# --- API ----------------------------------------------------------------
+	reverse_proxy api:8000 {
+		health_uri /health
+		health_interval 30s
+		health_timeout 5s
+	}
+
+	# Requests for anything else get a plain 404 rather than a stack trace.
+	handle_errors {
+		respond "{err.status_code} {err.status_text}" {err.status_code}
+	}
+}

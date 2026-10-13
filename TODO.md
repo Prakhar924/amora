@@ -6,24 +6,46 @@ Remaining work, ordered by what a real launch actually depends on.
 
 ## Blocking a public launch
 
+Deployment tooling now exists for all of these — see
+[DEPLOYMENT.md](DEPLOYMENT.md). What remains needs your accounts and billing
+approval; nothing has been provisioned or paid for.
+
+- [ ] **Provision a server and domain** (~€4.50/mo). `deploy/provision.sh`
+      prepares it; `deploy/deploy.sh` ships to it.
+- [ ] **Create the Cloudflare R2 bucket and API token** (free tier). Keep the
+      bucket private.
+- [ ] **Create the Resend account and verify a sending domain** (free tier).
+      Unverified domains land in spam.
+- [ ] **Set the `EXPO_PUBLIC_API_URL` repository variable** and re-run the
+      Pages workflow, so the published frontend talks to your backend.
+- [ ] **Promote your first admin account** after registering — production has
+      no seeded users, and photos stay invisible until a moderator approves
+      them.
+- [ ] **Test a backup restore.** The nightly dump currently lives on the same
+      host as the database, which protects against a dropped table but not a
+      dead server.
 - [ ] **Replace the placeholder legal documents.** `mobile/app/(auth)/terms.tsx`
       and `privacy.tsx` describe what the software genuinely does, but have not
       been reviewed by a lawyer. A dating product handling sensitive personal
       data needs real Terms, a real Privacy Policy, and a jurisdiction-specific
       data-processing basis.
-- [ ] **Real SMTP.** Set credentials and `EMAIL_CONSOLE_FALLBACK=false`, so a
-      mail outage surfaces loudly instead of silently logging verification links
-      where nobody sees them.
-- [ ] **Generate production secrets** and set `APP_ENV=production`. The app
-      refuses to boot otherwise, which is the intended behaviour.
-- [ ] **TLS everywhere.** Terminate at a proxy; restrict `CORS_ORIGINS` to the
-      real origins. Tokens must never travel over plain HTTP.
-- [ ] **Managed Postgres and Redis** with backups and point-in-time recovery.
-      A dating app losing its matches table is unrecoverable, reputationally.
-- [ ] **Run migrations as a release step** rather than from the app container,
-      before scaling past one replica.
-- [ ] **Content Security Policy on the web build.** Tokens fall back to
-      `localStorage` on web, so an XSS hole is a session-theft hole.
+- [x] **Real SMTP.** Wired for Resend/any SMTP provider in the production
+      compose file; `EMAIL_CONSOLE_FALLBACK=false` is now *enforced* in
+      production rather than merely recommended.
+- [x] **Generate production secrets** — `deploy/generate-secrets.py` produces
+      them and `deploy/check-config.py` validates the result before deploying.
+- [x] **TLS everywhere.** Caddy terminates TLS with automatic Let's Encrypt
+      certificates, which also gives `wss://` for chat. Plain-HTTP origins are
+      rejected at boot.
+- [x] **Database backups** — a nightly `pg_dump` container with retention.
+      Still needs an off-site copy and a tested restore (listed above).
+- [x] **Migrations run as a release step** in `deploy/deploy.sh`, before the
+      API restarts, so a failed migration never leaves new code on an old schema.
+- [x] **Security headers on the API** (CSP, HSTS, nosniff, DENY framing), set
+      by both the app and Caddy.
+- [ ] **Content Security Policy on the *frontend* build.** GitHub Pages cannot
+      set headers, so this needs a `<meta>` CSP or a host that can. Tokens fall
+      back to `localStorage` on web, so an XSS hole is a session-theft hole.
 
 ## Safety — the next things that actually matter
 
@@ -83,9 +105,9 @@ Remaining work, ordered by what a real launch actually depends on.
       expired rows should be deleted periodically.
 - [ ] **Structured logging and error tracking** (Sentry or similar). Currently
       plain stdout logging.
-- [ ] **Trusted-proxy configuration** so `X-Forwarded-For` is only believed from
-      the load balancer. Today it is honoured whenever `APP_ENV=production`,
-      which is correct only behind a proxy that overwrites it.
+- [x] **Trusted-proxy configuration** — uvicorn runs with `--proxy-headers`
+      and Caddy sets `trusted_proxies`, so forwarded headers come only from
+      the proxy.
 - [ ] **Soft-delete sweep.** Unmatched matches and soft-deleted messages are
       retained indefinitely; they need a retention policy.
 - [ ] **Metrics**: match rate, message-reply rate, report rate per 1k users —

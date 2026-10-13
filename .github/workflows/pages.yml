@@ -48,11 +48,36 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Export web bundle
-        # Pages serves this repo from /amora/, so the bundle must be built
-        # with a matching base URL or every asset path 404s.
         env:
+          # Pages serves this repo from /amora/, so the bundle must be built
+          # with a matching base URL or every asset path 404s.
           EXPO_BASE_URL: /amora
-        run: npx expo export --platform web --output-dir dist
+          # The backend the published app talks to. Set this as a repository
+          # *variable* (Settings -> Secrets and variables -> Actions ->
+          # Variables -> New variable, name EXPO_PUBLIC_API_URL, value
+          # https://your-api-domain/api/v1).
+          #
+          # It is a variable rather than a secret on purpose: it is baked into
+          # a public JavaScript bundle, so it is not confidential, and secrets
+          # are masked in logs which makes a wrong value hard to debug.
+          #
+          # Left unset, the build falls back to http://localhost:8000, and the
+          # welcome screen tells visitors the demo has no backend attached.
+          EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
+        run: |
+          if [ -n "$EXPO_PUBLIC_API_URL" ]; then
+            echo "Building against API: $EXPO_PUBLIC_API_URL"
+            case "$EXPO_PUBLIC_API_URL" in
+              https://*) ;;
+              *)
+                echo "::error::EXPO_PUBLIC_API_URL must use https:// — GitHub Pages is served over HTTPS, so a plain-HTTP API is blocked by the browser as mixed content."
+                exit 1
+                ;;
+            esac
+          else
+            echo "::warning::EXPO_PUBLIC_API_URL is not set — publishing an interface-only demo with no backend attached."
+          fi
+          npx expo export --platform web --output-dir dist
 
       - name: Disable Jekyll
         # Expo emits assets under `_expo/`, and Jekyll strips underscore-

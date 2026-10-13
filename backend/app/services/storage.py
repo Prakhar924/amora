@@ -121,6 +121,20 @@ def delete_object(key: str) -> None:
         logger.warning("Failed to delete %s: %s", key, exc)
 
 
+def bucket_reachable() -> bool:
+    """Confirm the configured bucket exists and the credentials work.
+
+    Used by the readiness probe. Synchronous (boto3), so callers on the async
+    path must push it to a worker thread.
+    """
+    try:
+        _client().head_bucket(Bucket=settings.s3_bucket)
+        return True
+    except (ClientError, BotoCoreError) as exc:
+        logger.warning("Object storage not reachable: %s", exc)
+        return False
+
+
 def ensure_bucket() -> bool:
     """Create the bucket if missing. Called once at startup in development."""
     client = _client()

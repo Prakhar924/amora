@@ -1,0 +1,215 @@
+# Production stack for Amora.
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+#
+# Differences from the development stack (docker-compose.yml), all deliberate:
+#
+#   * No Mailpit or LocalStack. Email goes to a real provider over SMTP and
+#     photos to real S3-compatible storage (Cloudflare R2, S3, or MinIO).
+#   * No source bind-mount and no --reload. The image is immutable; a deploy
+#     is a rebuild, not a file copy.
+#   * Postgres and Redis publish no host ports. They are reachable only on the
+#     internal Docker network, so the database is not exposed to the internet
+#     even if the firewall is misconfigured.
+#   * Caddy terminates TLS and obtains certificates automatically, which is
+#     what makes WSS work without any extra configuration.
+#   * No seeding. SEED_ON_START is absent; `app/seed.py` refuses to run with
+#     APP_ENV=production regardless.
+#   * Resource limits and log rotation, so one runaway container cannot take
+#     the host down or fill the disk.
+#
+# Every value comes from .env.production — see .env.production.example.
+
+name: amora-prod
+
+x-logging: &default-logging
+  # Without this, container logs grow until the disk is full. On a small VPS
+  # that is the most likely cause of an outage.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  caddy:
+    # Terminates TLS, obtains and renews Let's Encrypt certificates
+    # automatically, and proxies both HTTP and WebSocket traffic to the API.
+    image: caddy:2.8-alpine
+    restart: always
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?API_DOMAIN is required}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates must survive a restart or Let's Encrypt will rate-limit
+      # repeated re-issuance.
+      - caddy_data:/data
+      - caddy_config:/config
+    logging: *default-logging
+
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: ${POSTGRES_DB:?required}
+      # Checksums catch silent disk corruption, which matters when the
+      # database lives on a single VPS volume.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    # `--requirepass` because Redis holds rate-limit state and the chat
+    # fan-out; even on a private network it should not be anonymous.
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --requirepass
+      - ${REDIS_PASSWORD:?required}
+      - --maxmemory
+      - 256mb
+      # Rate-limit counters are disposable, so evicting the oldest keys under
+      # pressure is preferable to refusing writes.
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 320M
+    logging: *default-logging
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: amora-api:${IMAGE_TAG:-latest}
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      DEBUG: "false"
+      SECRET_KEY: ${SECRET_KEY:?required}
+
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:?required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: ${POSTGRES_DB:?required}
+
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+
+      # Object storage. For Cloudflare R2 both endpoints are the same HTTPS
+      # host, so no split-horizon configuration is needed.
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:?required}
+      S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:?required}
+      S3_REGION: ${S3_REGION:-auto}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?required}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?required}
+      S3_BUCKET: ${S3_BUCKET:?required}
+      S3_PRESIGN_TTL_SECONDS: ${S3_PRESIGN_TTL_SECONDS:-900}
+
+      SMTP_HOST: ${SMTP_HOST:?required}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:?required}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?required}
+      SMTP_FROM: ${SMTP_FROM:?required}
+      SMTP_USE_TLS: "true"
+      # A failed send must surface, not vanish into a log file.
+      EMAIL_CONSOLE_FALLBACK: "false"
+
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:?required}
+      CORS_ORIGINS: ${CORS_ORIGINS:?required}
+      ALLOWED_HOSTS: ${API_DOMAIN:?required}
+
+      ENABLE_DOCS: ${ENABLE_DOCS:-false}
+      REQUIRE_PHOTO_MODERATION: ${REQUIRE_PHOTO_MODERATION:-true}
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    # Not published to the host: Caddy reaches this over the Docker network.
+    expose:
+      - "8000"
+    # --proxy-headers makes uvicorn trust X-Forwarded-* so the app sees the
+    # real scheme and client IP; --forwarded-allow-ips restricts that trust to
+    # the Docker network, since the header is spoofable from anywhere else.
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - ${WEB_CONCURRENCY:-2}
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    logging: *default-logging
+
+  backup:
+    # Nightly pg_dump to a local volume. Not a substitute for off-site
+    # backups — see deploy/backup.sh, which can ship the dump to S3/R2.
+    image: postgres:16-alpine
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:?required}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?required}
+      PGDATABASE: ${POSTGRES_DB:?required}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+    volumes:
+      - postgres_backups:/backups
+      - ./deploy/backup.sh:/usr/local/bin/backup.sh:ro
+    entrypoint: ["sh", "/usr/local/bin/backup.sh"]
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  postgres_backups:
+  caddy_data:
+  caddy_config:
