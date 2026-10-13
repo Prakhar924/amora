@@ -1,0 +1,80 @@
+# Builds the Expo web bundle and publishes it to GitHub Pages.
+#
+# The deployed site is the real app bundle, but it is static: there is no
+# backend behind it, which the app states on its welcome screen. See
+# `mobile/src/components/demo-notice.tsx`.
+
+name: Deploy web app to Pages
+
+on:
+  push:
+    branches: [main]
+    # Only rebuild when something that affects the web bundle changes.
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/pages.yml'
+  # Allows a manual redeploy from the Actions tab.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it; queue the next one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Export web bundle
+        # Pages serves this repo from /amora/, so the bundle must be built
+        # with a matching base URL or every asset path 404s.
+        env:
+          EXPO_BASE_URL: /amora
+        run: npx expo export --platform web --output-dir dist
+
+      - name: Disable Jekyll
+        # Expo emits assets under `_expo/`, and Jekyll strips underscore-
+        # prefixed directories. Without this the site loads no JavaScript.
+        run: touch dist/.nojekyll
+
+      - name: Add SPA fallback
+        # expo-router uses client-side routing. Copying index.html to 404.html
+        # makes GitHub Pages serve the app for deep links such as /amora/login
+        # instead of its own 404 page.
+        run: cp dist/index.html dist/404.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: mobile/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

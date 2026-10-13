@@ -10,6 +10,7 @@ import { Link, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Button } from '@/components/ui';
+import { DemoNotice } from '@/components/demo-notice';
 import { APP_NAME, MINIMUM_AGE } from '@/lib/config';
 
 export default function Welcome() {
@@ -40,6 +41,7 @@ export default function Welcome() {
         </View>
 
         <View className="gap-3">
+          <DemoNotice />
           <Button
             label="Create an account"
             onPress={() => router.push('/(auth)/register')}
