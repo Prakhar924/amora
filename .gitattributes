@@ -1,0 +1,30 @@
+# Normalise line endings.
+#
+# Without this, a checkout on Windows gives shell scripts CRLF endings, and
+# running one inside a Linux container fails with the famously unhelpful
+# `bash: \r: command not found`. These files are executed on Linux regardless
+# of the machine they were edited on, so they are pinned to LF.
+
+* text=auto
+
+# Executed by a shell on Linux — must be LF.
+*.sh            text eol=lf
+deploy/Caddyfile text eol=lf
+backend/entrypoint.sh text eol=lf
+
+# Read by tooling that is whitespace-sensitive or runs in Linux containers.
+Dockerfile      text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+.env.example    text eol=lf
+*.env.example   text eol=lf
+
+# Binary assets must never be transformed.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.ico           binary
+*.ttf           binary
+*.otf           binary
+*.woff          binary
+*.woff2         binary
