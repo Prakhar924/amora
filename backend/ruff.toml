@@ -1,0 +1,27 @@
+# Lint configuration. Rules chosen to catch real defects (unused names, shadowed
+# builtins, mutable defaults) rather than to enforce stylistic preferences.
+line-length = 90
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "B008",    # FastAPI's Depends() in defaults is the documented pattern
+    "RUF012",  # ClassVar annotations are noise on SQLAlchemy models
+    # Suggests enum.StrEnum. Deliberately not adopted: `str, Enum` keeps
+    # str(member) as the member name, which several SQLAlchemy and Pydantic
+    # code paths here already depend on. Not worth the churn for style.
+    "UP042",
+]
+
+[lint.per-file-ignores]
+# Alembic migrations are generated; they do not need import hygiene.
+"alembic/versions/*" = ["E", "F", "I", "UP"]
+# Re-exported names in the models package are intentional.
+"app/models/__init__.py" = ["F401"]
+# Tests may shadow names and use assert-heavy style.
+"tests/*" = ["B011", "SIM117"]
+
+[lint.isort]
+known-first-party = ["app"]

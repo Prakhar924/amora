@@ -1,0 +1,47 @@
+# --- Secrets ---------------------------------------------------------------
+# Never commit real configuration. `.env.example` is the template.
+.env
+.env.*
+!.env.example
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- Node / Expo -----------------------------------------------------------
+node_modules/
+.expo/
+.expo-shared/
+dist/
+web-build/
+*.tsbuildinfo
+
+# --- Native build output ---------------------------------------------------
+android/
+ios/
+*.keystore
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+
+# --- Editors / OS ----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# --- Logs ------------------------------------------------------------------
+*.log
+npm-debug.log*
+yarn-error.log*

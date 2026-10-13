@@ -1,0 +1,24 @@
+# The local virtualenv is Windows-specific and enormous; the image builds its
+# own from requirements.txt.
+.venv/
+venv/
+env/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Secrets never enter the image; configuration comes from the environment.
+.env
+.env.*
+!.env.example
+
+.git/
+.gitignore
+*.md
+tests/
+htmlcov/
+.coverage

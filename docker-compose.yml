@@ -1,0 +1,142 @@
+# Local development stack for Amora.
+#
+#   docker compose up --build
+#
+# Brings up Postgres, Redis, LocalStack S3 (object storage), Mailpit (SMTP
+# catcher), and the API. Migrations run automatically from the API container's
+# entrypoint; seeding is controlled by SEED_ON_START.
+#
+# Service URLs once up:
+#   API + OpenAPI docs   http://localhost:8000/docs
+#   Mailpit inbox        http://localhost:8025
+#   S3 (LocalStack)      http://localhost:4566
+
+name: amora
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-amora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-amora}
+      POSTGRES_DB: ${POSTGRES_DB:-amora}
+    ports:
+      # 5434 on the host: 5432/5433 are commonly taken by other local Postgres
+      # instances. Change POSTGRES_PORT_HOST in .env if it clashes.
+      - "${POSTGRES_PORT_HOST:-5434}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-amora} -d ${POSTGRES_DB:-amora}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Durability is irrelevant for caches, rate-limit counters and pub/sub.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT_HOST:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  s3:
+    # LocalStack's S3 service stands in for AWS S3 locally. Unlike an in-memory
+    # mock it validates real SigV4 presigned URLs, which is exactly the upload
+    # path the app uses -- so the local flow matches production rather than
+    # passing because signatures are ignored.
+    # In production, point S3_* at real S3, Cloudflare R2, or a MinIO cluster;
+    # only environment variables change.
+    image: localstack/localstack:3
+    restart: unless-stopped
+    environment:
+      SERVICES: s3
+      DEBUG: "0"
+      PERSISTENCE: "1"
+      AWS_DEFAULT_REGION: ${S3_REGION:-us-east-1}
+    ports:
+      - "${S3_PORT_HOST:-4566}:4566"
+    volumes:
+      - s3_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health || exit 1"]
+      interval: 6s
+      timeout: 5s
+      retries: 20
+
+  mailpit:
+    # Captures every outbound email so verification and reset links are
+    # readable in development without configuring a real mail provider.
+    # Mailpit is the maintained successor to the archived MailHog (MIT).
+    image: axllent/mailpit:v1.21.8
+    restart: unless-stopped
+    ports:
+      - "${MAIL_SMTP_PORT_HOST:-1025}:1025"
+      - "${MAIL_UI_PORT_HOST:-8025}:8025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      s3:
+        condition: service_started
+    environment:
+      APP_ENV: development
+      DEBUG: "true"
+      SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-secret-change-me}
+
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-amora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-amora}
+      POSTGRES_DB: ${POSTGRES_DB:-amora}
+
+      REDIS_URL: redis://redis:6379/0
+
+      # The API signs presigned URLs for the *host* address, because the phone
+      # or browser that uses them cannot resolve the "s3" service name.
+      S3_ENDPOINT_URL: http://s3:4566
+      S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-http://localhost:4566}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-amoralocal}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-amoralocal}
+      S3_BUCKET: ${S3_BUCKET:-amora-photos}
+
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:8081}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8081,http://localhost:19006,http://localhost:3000,http://localhost:19000}
+
+      SEED_ON_START: ${SEED_ON_START:-true}
+    ports:
+      - "${API_PORT_HOST:-8000}:8000"
+    volumes:
+      # Source mount + --reload gives hot reload in development. Remove both
+      # for a production-like run.
+      - ./backend:/app
+      # Keep the image's virtualenv from being shadowed by a host .venv.
+      - /app/.venv
+    # The bind mount above replaces /app, including the executable bit the
+    # Dockerfile set on entrypoint.sh, so invoke it through bash explicitly.
+    entrypoint: ["bash", "./entrypoint.sh"]
+    command:
+      ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+volumes:
+  postgres_data:
+  s3_data:
