@@ -17,10 +17,12 @@ Last updated: 13 October 2026
 | 4 — Communication | ✅ Done |
 | 5 — Safety and quality | ✅ Done |
 | 6 — Finalisation | ◐ Mostly done — production deploy not performed |
+| 7 — Production readiness | ◐ Code complete — awaiting your accounts and billing |
 
-**125 backend tests pass. Frontend typechecks and builds. The full stack runs
+**155 backend tests pass. Frontend typechecks and builds. The full stack runs
 locally and the complete user journey has been exercised in a browser against
-the real API.**
+the real API. Production tooling is written and validated locally; nothing has
+been deployed and no paid resources exist.**
 
 ---
 
@@ -194,6 +196,60 @@ Not done:
 
 ---
 
+## Phase 7 — Production readiness ◐
+
+Everything needed to host the backend publicly now exists in the repository.
+Nothing has been provisioned, deployed, or paid for.
+
+Done:
+
+- **Production stack** (`docker-compose.prod.yml`): Caddy terminating TLS with
+  automatic Let's Encrypt certificates — which is what makes `wss://` work for
+  chat — plus Postgres and Redis with no published host ports, a Redis
+  password, memory limits, log rotation and nightly `pg_dump` backups. No
+  Mailpit, no LocalStack, no bind-mount, no `--reload`, no seeding.
+- **Boot-time guard**: the API now refuses to start in production with a
+  default signing key, default database or storage credentials, debug mode, a
+  plain-HTTP or localhost CORS origin, a wildcard host allow-list, plain-HTTP
+  storage/frontend URLs, a console email fallback, a development SMTP host, or
+  weak bcrypt rounds. Ten distinct checks, each covered by a test.
+- **Runtime hardening**: `TrustedHostMiddleware`, security headers (CSP, HSTS,
+  `nosniff`, `DENY` framing) set by both the app and Caddy, and OpenAPI docs
+  disabled by default in production.
+- **`/health/ready`**: verifies database, Redis *and* object storage, returning
+  503 when degraded so a deploy can gate on the status code. `/health` stays
+  cheap for container liveness.
+- **Deployment tooling**: `provision.sh` (Docker, firewall, swap, auto-updates),
+  `generate-secrets.py`, `check-config.py` (runs the app's own guard against an
+  env file before deploying), and `deploy.sh` (rsync, build, migrate as a
+  separate release step, verify readiness; secrets are never transmitted).
+- **Frontend connectivity**: `EXPO_PUBLIC_API_URL` wired through the Pages
+  workflow as a repository variable, with the build failing if it is not
+  `https://`.
+- **[DEPLOYMENT.md](DEPLOYMENT.md)**: costed walkthrough, ~€4.50/month.
+
+Not done — needs your accounts and billing approval:
+
+- No server, domain, object storage bucket or email account exists.
+- The nightly backup lives on the same host as the database, so it is not yet
+  a real backup. An off-site copy and a tested restore are listed in TODO.md.
+
+### Bugs found and fixed in this phase
+
+8. **WebSocket URL derivation was wrong for some configurations.** The regex
+   stripped a literal `/api/v1` suffix; given an API URL without one it
+   produced `wss://host` with no path, and chat would never connect. Rewritten
+   to strip any `/api/vN` and verified across five URL shapes.
+9. **Shell scripts were stored with CRLF line endings.** Git on Windows would
+   have shipped them to a Linux server where they fail with
+   `bash: : command not found` — breaking the very first deploy. Fixed with
+   `.gitattributes` and the executable bit set in the index.
+10. **`/health/ready` crashed on first use** (missing imports after an earlier
+    lint autofix removed them as unused). Caught by calling it against the
+    running stack rather than assuming it worked.
+
+---
+
 ## Verification log
 
 | What | How | Result |
@@ -203,11 +259,17 @@ Not done:
 | Seed | `python -m app.seed` | 44 profiles, 2 matches, 4 messages, photos in S3 |
 | API surface | `app.openapi()` | 44 endpoints registered |
 | Smoke test | Live API, 10 scenarios | All passed, incl. privacy and authorization |
-| Backend tests | `pytest` | **125 passed** in 127s |
+| Backend tests | `pytest` | **155 passed** in 68s |
 | Lint | `ruff check .` | All checks passed |
 | Frontend types | `tsc --noEmit` | Clean |
 | Frontend build | `expo export --platform web` | 2.4MB JS + 20KB CSS |
 | Browser journey | Sign in → discover → chat → send → matches | Working, message persisted |
+| Production compose | `docker compose -f docker-compose.prod.yml config` | Valid; only Caddy publishes ports |
+| Config generator | `generate-secrets.py` → `check-config.py` | Unedited template fails with 8 problems; completed config passes |
+| Readiness probe | `GET /health/ready` against live stack | All four dependencies `ok` |
+| Security headers | `curl -D -` | CSP, nosniff, DENY, Referrer-Policy present |
+| WSS derivation | 5 URL shapes | `https` → `wss`, prefix stripped correctly |
+| Line endings | `git show :file` | LF for every script executed on Linux |
 | Mobile viewport | 375×812 emulation | Renders correctly |
 
 ---
