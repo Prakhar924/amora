@@ -17,7 +17,7 @@ For the paid alternative (~€4.50/month, no sleeping, real email), see
 | API | Render Web Service | 750 instance-hours/mo | **Sleeps after 15 min idle**; ~1 min cold start |
 | Database | Supabase Postgres | 500 MB | **Pauses after 7 days** of no activity |
 | Cache / rate limits | Upstash Redis | 10k commands/day | No pub/sub over TCP → single instance only |
-| Photos | Cloudflare R2 | 10 GB, **zero egress** | 1M writes/mo |
+| Photos | Supabase Storage | 1 GB (same project) | S3-compatible; 5 GB egress/mo |
 | Email | Resend | 3,000/mo, 100/day | **Needs a domain to email anyone but yourself** |
 
 Everything below is already implemented in the repository. Your job is to
@@ -92,8 +92,13 @@ Upstash is still used for **rate limiting**, which only needs `INCR`/`EXPIRE`.
 
 ### 5. Storage and quotas
 
-10 GB of R2 is roughly 10,000 profile photos at 1 MB each — comfortable. The
-1M Class-A (write) operations per month is the one to watch if uploads spike.
+1 GB of Supabase Storage is roughly **1,000 profile photos** at 1 MB each.
+That is the tightest quota in the stack and the first one you will hit. The
+5 GB monthly egress allowance matters too: a photo-heavy feed serves the same
+images repeatedly, and discovery is almost entirely photo traffic.
+
+Cloudflare R2 would give 10 GB and unmetered egress for the same $0, but only
+after a checkout flow — see [step 3](#-3-supabase-storage--photos-no-extra-account).
 
 Upstash's free tier is **10,000 commands/day**. Every rate-limit check is one
 or two commands, so a few thousand requests a day is fine; a traffic spike will
@@ -102,9 +107,38 @@ error) rather than locking everyone out.
 
 ---
 
-## Setup checklist
+## Automated provisioning
 
-Five accounts, none requiring a card. Tick them off in order.
+Most of this is automated. Once you have created the accounts and generated
+API tokens — the parts that genuinely require a browser and accepting terms —
+the script does the rest:
+
+```bash
+cp deploy/tokens.env.example deploy/.secrets/tokens.env
+# paste in whichever tokens you have
+python deploy/provision-free.py --status     # what is ready, what is blocked
+python deploy/provision-free.py --dry-run    # show the calls without making them
+python deploy/provision-free.py              # provision
+```
+
+It creates the Supabase project, the Upstash database, and the Render service
+with all its environment variables, then sets the GitHub Actions variable and
+triggers a frontend rebuild. Every step is idempotent, so re-running after
+filling in a missing token simply continues from where it stopped. Secrets are
+masked in all output and `deploy/.secrets/` is git-ignored.
+
+It will **ask before creating the Render service**, since that is the step
+that publishes the backend publicly.
+
+Then verify the result end to end:
+
+```bash
+python deploy/verify-deployment.py https://<your-service>.onrender.com
+```
+
+## Account checklist
+
+Four accounts, none requiring a card. Tick them off in order.
 
 ### ☐ 1. Supabase — PostgreSQL
 
@@ -130,14 +164,30 @@ Five accounts, none requiring a card. Tick them off in order.
 2. Copy the **TCP** connection string (`rediss://default:<pw>@<host>:6379`),
    not the REST URL.
 
-### ☐ 3. Cloudflare R2 — photo storage
+### ☐ 3. Supabase Storage — photos (no extra account)
 
-1. Cloudflare dashboard → **R2** → *Create bucket* named `amora-photos`.
-2. **Keep it private.** The app serves photos through presigned URLs that
-   expire; a public bucket makes every user's photos permanently world-readable.
-3. **Manage R2 API Tokens** → create one with **Object Read & Write**.
-4. Note the Access Key ID, Secret Access Key, and your endpoint:
-   `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`
+Photos live in the Supabase project you already created in step 1, so there is
+nothing new to sign up for.
+
+1. Supabase dashboard → **Storage** → *New bucket* named `amora-photos`.
+2. **Keep it private** (leave "Public bucket" off). The app serves photos
+   through presigned URLs that expire; a public bucket would make every user's
+   photos permanently world-readable.
+3. **Project Settings → Storage → S3 access keys** → *New access key*.
+4. Note the Access Key ID, the Secret Access Key, and the S3 endpoint:
+   `https://<project-ref>.storage.supabase.co/storage/v1/s3`
+
+> **Why not Cloudflare R2?** R2 is the better service — 10 GB and zero egress
+> charges, against Supabase's 1 GB and 5 GB monthly egress. But Cloudflare's
+> own documentation says you must complete a *"checkout flow"* and that
+> *"You must purchase R2 before you can generate an API token."* That is a
+> dashboard-only step with no API route, and it conflicts with a strict
+> no-payment-method budget.
+>
+> Switching to R2 later needs **no code changes** — point `S3_ENDPOINT_URL`,
+> `S3_PUBLIC_ENDPOINT_URL`, `S3_ACCESS_KEY` and `S3_SECRET_KEY` at it and set
+> `S3_REGION=auto`. The app's S3 client already uses SigV4 with path-style
+> addressing, which both services require.
 
 ### ☐ 4. Resend — email
 

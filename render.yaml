@@ -82,11 +82,26 @@ services:
       - key: REDIS_URL
         sync: false
 
-      # --- Object storage: Cloudflare R2 ----------------------------------
+      # --- Object storage -------------------------------------------------
+      # DEFAULT: Supabase Storage. It is S3-compatible, included in the same
+      # free project as the database, and needs no extra account.
+      #
+      # Cloudflare R2 was the original choice and has a far larger allowance
+      # (10 GB and zero egress, against Supabase's 1 GB and 5 GB egress), but
+      # Cloudflare's own docs say you must complete a "checkout flow" and
+      # "must purchase R2 before you can generate an API token" — a
+      # dashboard-only step with no API route. That conflicts with a strict
+      # no-payment-method budget, so it is an opt-in upgrade rather than the
+      # default. To use R2 instead, just point these four values at it and set
+      # S3_REGION=auto; no code changes are required.
+      #
+      # Supabase: Project Settings -> Storage -> S3 access keys.
+      #   endpoint https://<project-ref>.storage.supabase.co/storage/v1/s3
+      #   region   the project's region, e.g. eu-west-1
       - key: S3_ENDPOINT_URL
-        sync: false             # https://<account-id>.r2.cloudflarestorage.com
+        sync: false
       - key: S3_PUBLIC_ENDPOINT_URL
-        sync: false             # same value as above for R2
+        sync: false             # same value; the endpoint is public HTTPS
       - key: S3_ACCESS_KEY
         sync: false
       - key: S3_SECRET_KEY
@@ -94,7 +109,7 @@ services:
       - key: S3_BUCKET
         value: amora-photos
       - key: S3_REGION
-        value: auto             # R2 requires the literal string "auto"
+        sync: false             # Supabase: the project region. R2: "auto"
 
       # --- Email: Resend over HTTPS (SMTP ports are blocked) --------------
       - key: EMAIL_TRANSPORT

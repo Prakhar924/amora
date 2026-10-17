@@ -4,6 +4,11 @@
 .env.*
 !.env.example
 
+# Provider API tokens used by deploy/provision-free.py. Everything in the
+# local credential store is excluded except its README.
+deploy/.secrets/*
+!deploy/.secrets/README.md
+
 # --- Python ----------------------------------------------------------------
 __pycache__/
 *.py[cod]
